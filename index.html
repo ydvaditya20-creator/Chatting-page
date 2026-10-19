@@ -70,12 +70,8 @@ button:disabled{opacity:.5;cursor:not-allowed}
 <script>
 "use strict";
 
-// IMPORTANT: Use a newly generated API key.
-// A key embedded in HTML is visible to anyone who opens the file.
-
-const API_BASE = "https://api.groq.com/openai/v1";
-const STT_MODEL = "whisper-large-v3";
-const CHAT_MODEL = "qwen/qwen3.8-27b";
+// Ab saari requests Vercel ke backend function par jayengi
+const API_BASE = "/api/chat";
 
 const startBtn = document.getElementById("startBtn");
 const stopBtn = document.getElementById("stopBtn");
@@ -86,16 +82,6 @@ let recorder = null;
 let stream = null;
 let chunks = [];
 let busy = false;
-
-const systemPrompt = `
-You are a friendly English speaking tutor.
-If the user makes an English grammar mistake, gently show:
-Correction: [correct sentence]
-Then reply in one or two simple English sentences.
-Use easy English suitable for a beginner.
-If the user speaks Hindi, explain how to express their idea in English.
-Be encouraging and friendly.
-`;
 
 function setStatus(message) {
  statusBox.textContent = message;
@@ -123,7 +109,7 @@ async function apiRequest(url, options) {
   let details = "";
   try {
    const data = await response.json();
-   details = data.error?.message || JSON.stringify(data);
+   details = data.error || JSON.stringify(data);
   } catch (_) {
    details = await response.text();
   }
@@ -136,12 +122,6 @@ async function apiRequest(url, options) {
 
 startBtn.onclick = async () => {
  if (busy || (recorder && recorder.state !== "inactive")) return;
-
- if (!GROQ_API_KEY ||
-     GROQ_API_KEY === "PASTE_YOUR_NEW_GROQ_API_KEY_HERE") {
-  setStatus("Please configure your new Groq API key.");
-  return;
- }
 
  if (!navigator.mediaDevices?.getUserMedia ||
      typeof MediaRecorder === "undefined") {
@@ -239,7 +219,7 @@ function cleanup() {
 }
 
 async function processAudio(blob) {
- setStatus("Converting speech to text...");
+ setStatus("Processing your audio and getting reply...");
 
  let extension = ".webm";
  if (blob.type.includes("mp4")) extension = ".mp4";
@@ -248,71 +228,34 @@ async function processAudio(blob) {
 
  const formData = new FormData();
  formData.append("file", blob, "recording" + extension);
- formData.append("model", STT_MODEL);
- formData.append("response_format", "json");
 
- // Correct Groq speech-to-text endpoint
- const sttResponse = await apiRequest(
-  API_BASE + "/audio/transcriptions",
+ // Hum direct apna raw audio data Vercel backend proxy ko bhej rahe hain
+ const response = await apiRequest(
+  API_BASE,
   {
    method: "POST",
-   headers: {
-    "Authorization": "Bearer " + GROQ_API_KEY
-   },
    body: formData
   }
  );
 
- const sttData = await sttResponse.json();
- const userText = (sttData.text || "").trim();
+ const data = await response.json();
 
- if (!userText) {
-  setStatus("I couldn't hear any words. Please try again.");
-  return;
- }
-
- addMessage("You", userText, "user-msg");
-
- const normalized = userText.toLowerCase()
-  .replace(/[.!?]/g, "").trim();
-
- if (["exit", "bye", "goodbye", "quit"].includes(normalized)) {
-  speakReply("Goodbye! Keep practicing your English every day.");
-  return;
- }
-
- setStatus("AI is preparing your reply...");
-
- // Correct Groq chat completion endpoint
- const llmResponse = await apiRequest(
-  API_BASE + "/chat/completions",
-  {
-   method: "POST",
-   headers: {
-    "Authorization": "Bearer " + GROQ_API_KEY,
-    "Content-Type": "application/json"
-   },
-   body: JSON.stringify({
-    model: CHAT_MODEL,
-    messages: [
-     {role:"system", content:systemPrompt},
-     {role:"user", content:userText}
-    ],
-    temperature:0.5,
-    max_tokens:250
-   })
+ // Backend se user ka converted text aur AI ka reply dono ek sath milenge
+ if (data.userText) {
+  addMessage("You", data.userText, "user-msg");
+  
+  const normalized = data.userText.toLowerCase().replace(/[.!?]/g, "").trim();
+  if (["exit", "bye", "goodbye", "quit"].includes(normalized)) {
+   speakReply("Goodbye! Keep practicing your English every day.");
+   return;
   }
- );
-
- const llmData = await llmResponse.json();
- const aiReply =
-  llmData.choices?.[0]?.message?.content?.trim();
-
- if (!aiReply) {
-  throw new Error("The AI returned an empty response.");
  }
 
- speakReply(aiReply);
+ if (data.aiReply) {
+  speakReply(data.aiReply);
+ } else {
+  throw new Error(data.error || "The AI returned an empty response.");
+ }
 }
 
 function speakReply(reply) {
@@ -334,5 +277,6 @@ function speakReply(reply) {
  }
 }
 </script>
+
 </body>
 </html>
