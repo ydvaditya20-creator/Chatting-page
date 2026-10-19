@@ -221,42 +221,49 @@ function cleanup() {
 async function processAudio(blob) {
  setStatus("Processing your audio and getting reply...");
 
- let extension = ".webm";
- if (blob.type.includes("mp4")) extension = ".mp4";
- else if (blob.type.includes("ogg")) extension = ".ogg";
- else if (blob.type.includes("wav")) extension = ".wav";
+ // Audio blob ko Base64 string me convert karne ka function
+ const reader = new FileReader();
+ reader.readAsDataURL(blob);
+ reader.onloadend = async () => {
+   const base64Audio = reader.result.split(',')[1]; // Sirf raw base64 data uthaya
 
- const formData = new FormData();
- formData.append("file", blob, "recording" + extension);
+   try {
+     // Ab hum JSON body ke roop me data bhejenge, form-data ke jhanjhat se mukti
+     const response = await apiRequest(
+      API_BASE,
+      {
+       method: "POST",
+       headers: {
+         "Content-Type": "application/json"
+       },
+       body: JSON.stringify({ audio: base64Audio })
+      }
+     );
 
- // Hum direct apna raw audio data Vercel backend proxy ko bhej rahe hain
- const response = await apiRequest(
-  API_BASE,
-  {
-   method: "POST",
-   body: formData
-  }
- );
+     const data = await response.json();
 
- const data = await response.json();
+     if (data.userText) {
+      addMessage("You", data.userText, "user-msg");
+      
+      const normalized = data.userText.toLowerCase().replace(/[.!?]/g, "").trim();
+      if (["exit", "bye", "goodbye", "quit"].includes(normalized)) {
+       speakReply("Goodbye! Keep practicing your English every day.");
+       return;
+      }
+     }
 
- // Backend se user ka converted text aur AI ka reply dono ek sath milenge
- if (data.userText) {
-  addMessage("You", data.userText, "user-msg");
-  
-  const normalized = data.userText.toLowerCase().replace(/[.!?]/g, "").trim();
-  if (["exit", "bye", "goodbye", "quit"].includes(normalized)) {
-   speakReply("Goodbye! Keep practicing your English every day.");
-   return;
-  }
- }
-
- if (data.aiReply) {
-  speakReply(data.aiReply);
- } else {
-  throw new Error(data.error || "The AI returned an empty response.");
- }
+     if (data.aiReply) {
+      speakReply(data.aiReply);
+     } else {
+      throw new Error(data.error || "The AI returned an empty response.");
+     }
+     
+   } catch (error) {
+     setStatus("Error: " + error.message);
+   }
+ };
 }
+
 
 function speakReply(reply) {
  addMessage("AI Tutor", reply, "ai-msg");
