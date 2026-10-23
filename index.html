@@ -1,0 +1,339 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI English Speaking Tutor</title>
+
+<style>
+*{box-sizing:border-box}
+body{
+ font-family:Arial,sans-serif;background:#f4f7f6;
+ margin:0;padding:16px;min-height:100vh;
+ display:flex;justify-content:center;align-items:center
+}
+.container{
+ background:white;padding:24px;border-radius:16px;
+ box-shadow:0 8px 24px #00000015;
+ width:100%;max-width:480px
+}
+h2{text-align:center;color:#2c3e50;margin-top:0}
+p{color:#667085;font-size:14px;line-height:1.5}
+.status{
+ padding:12px;border-radius:8px;background:#ecf0f1;
+ margin:18px 0;text-align:center;font-size:14px
+}
+.buttons{display:flex;gap:12px;justify-content:center}
+button{
+ padding:13px 20px;border:0;border-radius:25px;
+ font-size:16px;font-weight:bold;cursor:pointer
+}
+#startBtn{background:#20a464;color:white}
+#stopBtn{background:#e74c3c;color:white}
+button:disabled{opacity:.5;cursor:not-allowed}
+.chat{
+ margin-top:22px;padding-top:16px;border-top:1px solid #ddd;
+ max-height:320px;overflow-y:auto
+}
+.message{margin:12px 0;line-height:1.5;overflow-wrap:anywhere}
+.user-msg{color:#1769aa}
+.ai-msg{
+ background:#f0f6ff;padding:12px;border-radius:8px;
+ border-left:4px solid #3498db;color:#263746
+}
+.small{font-size:12px;color:#777}
+</style>
+</head>
+
+<body>
+<div class="container">
+ <h2>🎓 AI English Tutor</h2>
+ <p style="text-align:center">
+  Tap Start, speak, and then tap Stop.
+ </p>
+
+ <div class="status" id="recStatus">Ready to talk</div>
+
+ <div class="buttons">
+  <button id="startBtn">🎙️ Start</button>
+  <button id="stopBtn" disabled>⏹ Stop</button>
+ </div>
+
+ <p class="small">
+  Speak clearly. Allow microphone access when asked.
+ </p>
+
+ <div class="chat" id="chatBox"></div>
+</div>
+
+<script>
+"use strict";
+
+// IMPORTANT: Use a newly generated API key.
+// A key embedded in HTML is visible to anyone who opens the file.
+const GROQ_API_KEY = "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";
+
+const API_BASE = "https://api.groq.com/openai/v1";
+const STT_MODEL = "whisper-large-v3";
+const CHAT_MODEL = "qwen/qwen3.8-27b";
+
+const startBtn = document.getElementById("startBtn");
+const stopBtn = document.getElementById("stopBtn");
+const statusBox = document.getElementById("recStatus");
+const chatBox = document.getElementById("chatBox");
+
+let recorder = null;
+let stream = null;
+let chunks = [];
+let busy = false;
+
+const systemPrompt = `
+You are a friendly English speaking tutor.
+If the user makes an English grammar mistake, gently show:
+Correction: [correct sentence]
+Then reply in one or two simple English sentences.
+Use easy English suitable for a beginner.
+If the user speaks Hindi, explain how to express their idea in English.
+Be encouraging and friendly.
+`;
+
+function setStatus(message) {
+ statusBox.textContent = message;
+}
+
+function addMessage(sender, text, className) {
+ const div = document.createElement("div");
+ div.className = "message " + className;
+
+ const label = document.createElement("strong");
+ label.textContent = sender + ": ";
+
+ const content = document.createElement("span");
+ content.textContent = text;
+
+ div.append(label, content);
+ chatBox.appendChild(div);
+ chatBox.scrollTop = chatBox.scrollHeight;
+}
+
+async function apiRequest(url, options) {
+ const response = await fetch(url, options);
+
+ if (!response.ok) {
+  let details = "";
+  try {
+   const data = await response.json();
+   details = data.error?.message || JSON.stringify(data);
+  } catch (_) {
+   details = await response.text();
+  }
+
+  throw new Error("HTTP " + response.status + ": " + details);
+ }
+
+ return response;
+}
+
+startBtn.onclick = async () => {
+ if (busy || (recorder && recorder.state !== "inactive")) return;
+
+ if (!GROQ_API_KEY ||
+     GROQ_API_KEY === "PASTE_YOUR_NEW_GROQ_API_KEY_HERE") {
+  setStatus("Please configure your new Groq API key.");
+  return;
+ }
+
+ if (!navigator.mediaDevices?.getUserMedia ||
+     typeof MediaRecorder === "undefined") {
+  setStatus("Microphone unavailable. Open this page in a supported HTTPS browser.");
+  return;
+ }
+
+ try {
+  stream = await navigator.mediaDevices.getUserMedia({audio:true});
+
+  let mimeType = "";
+  const types = [
+   "audio/webm;codecs=opus",
+   "audio/webm",
+   "audio/mp4"
+  ];
+
+  for (const type of types) {
+   if (MediaRecorder.isTypeSupported(type)) {
+    mimeType = type;
+    break;
+   }
+  }
+
+  recorder = mimeType
+   ? new MediaRecorder(stream, {mimeType})
+   : new MediaRecorder(stream);
+
+  chunks = [];
+
+  recorder.ondataavailable = event => {
+   if (event.data && event.data.size > 0) {
+    chunks.push(event.data);
+   }
+  };
+
+  recorder.onerror = event => {
+   setStatus("Recording error: " +
+    (event.error?.message || "Unknown error"));
+   cleanup();
+  };
+
+  recorder.onstop = async () => {
+   const blob = new Blob(chunks, {
+    type: recorder.mimeType || "audio/webm"
+   });
+
+   cleanup();
+
+   if (!blob.size) {
+    setStatus("No audio recorded. Please try again.");
+    return;
+   }
+
+   busy = true;
+   startBtn.disabled = true;
+   stopBtn.disabled = true;
+
+   try {
+    await processAudio(blob);
+   } catch (error) {
+    setStatus("Error: " + error.message);
+   } finally {
+    busy = false;
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+   }
+  };
+
+  recorder.start();
+  startBtn.disabled = true;
+  stopBtn.disabled = false;
+  setStatus("🔴 Recording... Speak now.");
+
+ } catch (error) {
+  cleanup();
+  setStatus("Microphone error: " + error.message);
+ }
+};
+
+stopBtn.onclick = () => {
+ if (recorder && recorder.state === "recording") {
+  stopBtn.disabled = true;
+  setStatus("Processing your voice...");
+  recorder.stop();
+ }
+};
+
+function cleanup() {
+ if (stream) {
+  stream.getTracks().forEach(track => track.stop());
+  stream = null;
+ }
+ stopBtn.disabled = true;
+}
+
+async function processAudio(blob) {
+ setStatus("Converting speech to text...");
+
+ let extension = ".webm";
+ if (blob.type.includes("mp4")) extension = ".mp4";
+ else if (blob.type.includes("ogg")) extension = ".ogg";
+ else if (blob.type.includes("wav")) extension = ".wav";
+
+ const formData = new FormData();
+ formData.append("file", blob, "recording" + extension);
+ formData.append("model", STT_MODEL);
+ formData.append("response_format", "json");
+
+ // Correct Groq speech-to-text endpoint
+ const sttResponse = await apiRequest(
+  API_BASE + "/audio/transcriptions",
+  {
+   method: "POST",
+   headers: {
+    "Authorization": "Bearer " + GROQ_API_KEY
+   },
+   body: formData
+  }
+ );
+
+ const sttData = await sttResponse.json();
+ const userText = (sttData.text || "").trim();
+
+ if (!userText) {
+  setStatus("I couldn't hear any words. Please try again.");
+  return;
+ }
+
+ addMessage("You", userText, "user-msg");
+
+ const normalized = userText.toLowerCase()
+  .replace(/[.!?]/g, "").trim();
+
+ if (["exit", "bye", "goodbye", "quit"].includes(normalized)) {
+  speakReply("Goodbye! Keep practicing your English every day.");
+  return;
+ }
+
+ setStatus("AI is preparing your reply...");
+
+ // Correct Groq chat completion endpoint
+ const llmResponse = await apiRequest(
+  API_BASE + "/chat/completions",
+  {
+   method: "POST",
+   headers: {
+    "Authorization": "Bearer " + GROQ_API_KEY,
+    "Content-Type": "application/json"
+   },
+   body: JSON.stringify({
+    model: CHAT_MODEL,
+    messages: [
+     {role:"system", content:systemPrompt},
+     {role:"user", content:userText}
+    ],
+    temperature:0.5,
+    max_tokens:250
+   })
+  }
+ );
+
+ const llmData = await llmResponse.json();
+ const aiReply =
+  llmData.choices?.[0]?.message?.content?.trim();
+
+ if (!aiReply) {
+  throw new Error("The AI returned an empty response.");
+ }
+
+ speakReply(aiReply);
+}
+
+function speakReply(reply) {
+ addMessage("AI Tutor", reply, "ai-msg");
+ setStatus("Ready for your next turn.");
+
+ if ("speechSynthesis" in window) {
+  window.speechSynthesis.cancel();
+
+  const utterance = new SpeechSynthesisUtterance(reply);
+  utterance.lang = "en-US";
+  utterance.rate = 0.9;
+
+  utterance.onstart = () => setStatus("🔊 AI is speaking...");
+  utterance.onend = () => setStatus("Ready for your next turn.");
+  utterance.onerror = () => setStatus("Reply ready. Tap Start to continue.");
+
+  window.speechSynthesis.speak(utterance);
+ }
+}
+</script>
+</body>
+</html>
